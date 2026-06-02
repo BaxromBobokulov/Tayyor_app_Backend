@@ -1,0 +1,281 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// 👤 FOYDALANUVCHILAR
+// ============================================
+model User {
+  id           Int      @id @default(autoincrement())
+  fullName     String
+  phoneNumber  String   @unique
+  password     String
+  role         Role     @default(DRIVER)
+  avatarUrl    String?
+  fcmToken     String?  // 🔔 Push notification uchun (Firebase)
+  
+  refreshToken String?
+  isActive     Boolean  @default(true)
+  isBlocked    Boolean  @default(false) // Admin bloklashi uchun
+
+  // Relations
+  requests          Request[]
+  shop              Shop?
+  sentMessages      Message[]      @relation("SentMessages")
+  notifications     Notification[]
+  reviewsGiven      Review[]       @relation("ReviewsGiven")   // Driver bergan
+  reviewsReceived   Review[]       @relation("ReviewsReceived") // Shopga kelgan
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum Role {
+  DRIVER
+  SHOP
+  ADMIN
+  SUPERADMIN
+}
+
+// ============================================
+// 🏪 DO'KONLAR
+// ============================================
+model Shop {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  address     String
+  
+  // Geolokatsiya
+  lat         Float?
+  lng         Float?
+  
+  phoneNumber  String
+  workingHours String?  // "09:00 - 18:00"
+  telegram     String?  // Ko'pchilik Telegram orqali ishlaydi
+  
+  logoUrl      String?  // Do'kon logotipi
+  bannerUrl    String?  // Do'kon banneri
+  
+  categories  String[] // ["Motor", "Xodovoy", "Elektronika"]
+  brands      String[] // ["Chevrolet", "Hyundai", "KIA"]
+  
+  rating      Float    @default(0.0)
+  reviewCount Int      @default(0)   // Rating hisoblash uchun
+  isVerified  Boolean  @default(false)
+  isOpen      Boolean  @default(true) // Do'kon hozir ochiqmi?
+  
+  ownerId     Int      @unique
+  owner       User     @relation(fields: [ownerId], references: [id])
+  
+  offers      Offer[]
+  reviews     Review[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ============================================
+// 📋 SO'ROVLAR (DRIVER → HAMMAGA KO'RINADI)
+// ============================================
+model Request {
+  id          Int           @id @default(autoincrement())
+  carModel    String        // "Gentra"
+  carYear     Int
+  carBody     String?       // "Sedan", "Hatchback"
+  vinCode     String?
+  partName    String        // "3-pozitsiya"
+  partNumber  String?       // Original detal raqami (bilsa)
+  description String?
+  
+  // Qaysi shahar/tuman
+  regionId    Int?
+  region      Region?       @relation(fields: [regionId], references: [id])
+
+  images      Image[]
+  status      RequestStatus @default(OPEN)
+  urgency     Urgency       @default(NORMAL)
+  voiceUrl    String?
+  
+  // Qabul qilingan taklif (kelishuv bo'lganda)
+  acceptedOfferId Int?      @unique
+  acceptedOffer   Offer?    @relation("AcceptedOffer", fields: [acceptedOfferId], references: [id])
+
+  driverId    Int
+  driver      User          @relation(fields: [driverId], references: [id])
+
+  offers      Offer[]
+  chats       Chat[]        // Bu so'rov bo'yicha chatlar
+
+  viewCount   Int           @default(0) // Necha sotuvchi ko'rdi
+  
+  expiresAt   DateTime?     // So'rov muddati (optional, masalan 3 kun)
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+enum RequestStatus {
+  OPEN         // Barcha ko'ra oladi
+  IN_PROGRESS  // Kelishuv boshlandi
+  CLOSED       // Sotib olindi ✅
+  CANCELLED    // Bekor qilindi ❌
+  EXPIRED      // Muddat o'tdi ⏰
+}
+
+enum Urgency {
+  URGENT       // Shoshilinch
+  TODAY        // Bugun
+  NORMAL       // Oddiy
+}
+
+// ============================================
+// 🖼 RASMLAR
+// ============================================
+model Image {
+  id        Int     @id @default(autoincrement())
+  url       String
+  publicId  String? // Cloudinary public_id (o'chirish uchun kerak)
+  requestId Int
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}
+
+// ============================================
+// 💰 NARX TAKLIFLARI (SHOP → DRIVERGA)
+// ============================================
+model Offer {
+  id          Int         @id @default(autoincrement())
+  price       Decimal     @db.Decimal(12, 2)
+  currency    String      @default("UZS")
+  condition   Condition   @default(NEW)
+  delivery    Boolean     @default(false)
+  deliveryTime String?    // "1-2 kun ichida"
+  comment     String?     // "Original GM, kafolat bor"
+  warranty    String?     // "3 oy kafolat"
+  
+  status      OfferStatus @default(PENDING)
+  
+  requestId   Int
+  request     Request     @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  
+  shopId      Int
+  shop        Shop        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  
+  // Qabul qilingan offer bo'lsa
+  acceptedRequest Request? @relation("AcceptedOffer")
+  
+  chat        Chat?       // Offer bo'yicha chat
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+enum OfferStatus {
+  PENDING    // Kutilmoqda
+  ACCEPTED   // Driver qabul qildi ✅
+  REJECTED   // Driver rad etdi ❌
+  WITHDRAWN  // Shop o'zi qaytarib oldi
+}
+
+enum Condition {
+  NEW
+  USED
+  REFURBISHED
+}
+
+// ============================================
+// 💬 CHAT (DRIVER ↔ SHOP)
+// ============================================
+model Chat {
+  id        Int       @id @default(autoincrement())
+  
+  requestId Int
+  request   Request   @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  
+  offerId   Int?      @unique
+  offer     Offer?    @relation(fields: [offerId], references: [id])
+  
+  messages  Message[]
+  
+  createdAt DateTime  @default(now())
+}
+
+model Message {
+  id        Int         @id @default(autoincrement())
+  text      String?
+  imageUrl  String?     // Rasmli xabar yuborsa
+  
+  isRead    Boolean     @default(false)
+  
+  chatId    Int
+  chat      Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  
+  senderId  Int
+  sender    User        @relation("SentMessages", fields: [senderId], references: [id])
+  
+  createdAt DateTime    @default(now())
+}
+
+// ============================================
+// ⭐ REYTINGLAR VA SHARHLAR
+// ============================================
+model Review {
+  id         Int    @id @default(autoincrement())
+  rating     Int    // 1-5
+  comment    String?
+  
+  // Kim yozdi
+  authorId   Int
+  author     User   @relation("ReviewsGiven", fields: [authorId], references: [id])
+  
+  // Kimga yozildi
+  targetId   Int
+  target     User   @relation("ReviewsReceived", fields: [targetId], references: [id])
+  
+  // Qaysi do'konga
+  shopId     Int
+  shop       Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  createdAt  DateTime @default(now())
+}
+
+// ============================================
+// 🔔 BILDIRISHNOMALAR
+// ============================================
+model Notification {
+  id        Int              @id @default(autoincrement())
+  title     String
+  body      String
+  type      NotificationType
+  isRead    Boolean          @default(false)
+  
+  // Qo'shimcha ma'lumot (JSON)
+  data      Json?            // { requestId: 1, offerId: 2 }
+  
+  userId    Int
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime         @default(now())
+}
+
+enum NotificationType {
+  NEW_OFFER        // Driverga: yangi taklif keldi
+  OFFER_ACCEPTED   // Shopga: taklifi qabul qilindi
+  OFFER_REJECTED   // Shopga: taklifi rad etildi
+  NEW_MESSAGE      // Yangi xabar
+  REQUEST_EXPIRED  // So'rov muddati tugadi
+  SYSTEM           // Admin xabari
+}
+
+// ============================================
+// 🗺 HUDUDLAR (FILTER UCHUN)
+// ============================================
+model Region {
+  id       Int       @id @default(autoincrement())
+  name     String    @unique // "Toshkent", "Samarqand"
+  requests Request[]
+}
